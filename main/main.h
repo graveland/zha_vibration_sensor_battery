@@ -15,7 +15,7 @@
 
 #define WATER_LEAK_GPIO 14 /* GPIO pin for water leak sensor */
 #define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
-#define HEARTBEAT_INTERVAL_US (60000000) /* Heartbeat every minute (microseconds) */
+#define HEARTBEAT_INTERVAL_US (120000000) /* Heartbeat every 2m (microseconds) */
 
 /* Attribute values in ZCL string format
  * The string should be started with the length of its own.
