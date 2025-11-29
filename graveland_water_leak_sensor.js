@@ -1,15 +1,18 @@
-const {temperature, identify} = require('zigbee-herdsman-converters/lib/modernExtend');
+const {iasZoneAlarm, identify} = require('zigbee-herdsman-converters/lib/modernExtend');
 const ota = require('zigbee-herdsman-converters/lib/ota');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const e = exposes.presets;
 
 const definition = {
-    zigbeeModel: ['Temperature Sensor'],
-    model: 'Temperature Sensor',
+    zigbeeModel: ['Water Leak Sensor'],
+    model: 'Water Leak Sensor',
     vendor: 'graveland',
-    description: 'Temperature sensor (mains powered)',
+    description: 'Water leak sensor (mains powered router)',
     extend: [
-        temperature(),
+        iasZoneAlarm({
+            zoneType: 'water_leak',
+            zoneAttributes: ['alarm_1'],
+        }),
         identify(),
     ],
     ota: {
@@ -27,19 +30,12 @@ const definition = {
     configure: async (device, coordinatorEndpoint) => {
         const endpoint = device.getEndpoint(1);
 
-        // Bind power config and temperature measurement clusters for reporting
+        // Bind power config and IAS zone clusters
         await endpoint.bind('genPowerCfg', coordinatorEndpoint);
-        await endpoint.bind('msTemperatureMeasurement', coordinatorEndpoint);
+        await endpoint.bind('ssIasZone', coordinatorEndpoint);
 
-        // Configure temperature reporting
-        await endpoint.configureReporting('msTemperatureMeasurement', [
-            {
-                attribute: 'measuredValue',
-                minimumReportInterval: 5,     // Report at least every 5 second
-                maximumReportInterval: 300,   // Report every 5 minutes
-                reportableChange: 50,         // Report on 1.0°C change (value is in 0.01°C units)
-            }
-        ]);
+        // IAS Zone devices use zone status change notifications, not periodic reporting
+        // The device will automatically send notifications when the zone status changes
     },
 };
 

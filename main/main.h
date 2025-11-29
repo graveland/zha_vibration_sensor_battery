@@ -6,21 +6,16 @@
   false /* enable the install code policy for security */
 #define ED_AGING_TIMEOUT ESP_ZB_ED_AGING_TIMEOUT_64MIN
 #define ED_KEEP_ALIVE 3000 /* 3000 millisecond */
-#define HA_ESP_TEMP_START_ENDPOINT                                             \
-  1 /* esp temperature sensor device endpoint, used for temperature            \
-       measurement */
-#define HA_ESP_NUM_T_SENSORS 1
+#define HA_ESP_LEAK_START_ENDPOINT 1 /* esp water leak sensor device endpoint */
+#define HA_ESP_NUM_LEAK_SENSORS 1
 
 #define ESP_ZB_PRIMARY_CHANNEL_MASK                                            \
   ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK /* Zigbee primary channel mask use in   \
                                           the example */
 
-#define ESP_TEMP_SENSOR_UPDATE_INTERVAL                                        \
-  (10000000) /* Local sensor update interval (microsecond) */
-#define ESP_TEMP_SENSOR_MIN_VALUE                                              \
-  (-20) /* Local sensor min measured value (degree Celsius) */
-#define ESP_TEMP_SENSOR_MAX_VALUE                                              \
-  (80) /* Local sensor max measured value (degree Celsius) */
+#define WATER_LEAK_GPIO 14 /* GPIO pin for water leak sensor */
+#define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
+#define HEARTBEAT_INTERVAL_US (60000000) /* Heartbeat every minute (microseconds) */
 
 /* Attribute values in ZCL string format
  * The string should be started with the length of its own.
@@ -29,13 +24,13 @@
   "\x09"                                                                       \
   "graveland"
 #define MODEL_IDENTIFIER                                                       \
-  "\x12"                                                                       \
-  "Temperature Sensor"
+  "\x11"                                                                       \
+  "Water Leak Sensor"
 
 /* OTA Upgrade configuration */
 #define OTA_UPGRADE_MANUFACTURER                                               \
   0x1234 /* Manufacturer code (must match OTA image) */
-#define OTA_UPGRADE_IMAGE_TYPE 0x5679 /* Image type (must match OTA image) */
+#define OTA_UPGRADE_IMAGE_TYPE 0x567a /* Image type (must match OTA image) */
 #define OTA_UPGRADE_FILE_VERSION 0x00000002 /* Current firmware version */
 #define OTA_UPGRADE_HW_VERSION 0x0001       /* Hardware version */
 #define OTA_UPGRADE_MAX_DATA_SIZE 64        /* OTA image block size */
@@ -79,4 +74,3 @@ typedef enum {
       .host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE,                    \
   }
 
-static void temp_timer_callback(void *arg);

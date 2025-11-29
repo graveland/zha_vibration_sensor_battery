@@ -1,24 +1,51 @@
-started from: https://github.com/prairiesnpr/esp_zha_freezer_mon
+# Zigbee Water Leak Sensor
 
-This is just a single temperature sensor now, but I'm attempting to hack on OTA updates. I'm currently stuck getting
-zigbee2mqtt to cooperate.
+| Supported Targets | ESP32-C6 | ESP32-H2 |
+| ----------------- | -------- | -------- |
 
-to OTA:
-- increment OTA_UPGRADE_FILE_VERSION in main/main.h from 1 -> 2
-- idf.py build
-- python3 create_ota_image.py build/graveland_temperature_sensor.bin builds/graveland_temperature_sensor_v2.zigbee 2
-- copy builds/graveland_temperature_monitor_v2.zigbee to zigbee2mqtt's data/ota directory
-- update zigbee2mqtt's index.json
+This is a Zigbee water leak sensor using the IAS (Intruder Alarm System) Zone cluster. It's configured as a router device (powered by mains) and reports water leak status to your Zigbee coordinator.
 
+## Hardware
 
-original README:
-| Supported Targets | ESP32-C6 | ESP32-H2 | 
-| ----------------- | -------- | -------- | 
+- 1x ESP32-C6 (or ESP32-H2)
+- 1x Water leak sensor probe (simple contact closure type)
 
-This is a Zigbee temperature monitor, in my case used for a freezer. The design supports up to
-four ds18b20s. The only other component required is a 4.7kohm resistor between data and Vcc.
+The water leak sensor should be a simple two-wire probe that shorts to ground when water is detected.
 
-As built:
-1 - esp32-C6 Super Mini.
-1 - 4.7kohm resistor
-4 - ds18b20s temperature probes
+## GPIO Configuration
+
+- GPIO 14: Water leak sensor input (configurable via WATER_LEAK_GPIO in main/main.h)
+  - HIGH (1) = No water detected (normal state with pull-up)
+  - LOW (0) = Water detected (probe shorted to ground)
+
+## Features
+
+- **IAS Zone Device**: Properly reports as a water sensor (zone type 0x002a)
+- **Router Device**: Mains-powered Zigbee router (not an end device)
+- **Interrupt-Driven**: Immediate response using GPIO interrupts with 50ms debouncing
+- **Low Power**: CPU-efficient interrupt-driven design instead of polling
+- **OTA Updates**: Supports Over-The-Air firmware updates
+
+## OTA Update Process
+
+1. Increment OTA_UPGRADE_FILE_VERSION in main/main.h (e.g., from 2 to 3)
+2. Build the firmware: `idf.py build`
+3. Create OTA image: `python3 create_ota_image.py build/zha_water_leak_sensor.bin builds/water_leak_sensor_v3.zigbee 3`
+4. Copy the .zigbee file to your coordinator's OTA directory
+5. Trigger OTA update from your Zigbee coordinator (ZHA, Zigbee2MQTT, etc.)
+
+## Building and Flashing
+
+```bash
+idf.py build
+idf.py flash monitor
+```
+
+## Integration
+
+This device will show up as an IAS Zone water sensor in:
+- Home Assistant (ZHA)
+- Zigbee2MQTT
+- Other Zigbee coordinators supporting IAS zones
+
+The sensor reports immediately when water is detected or cleared.

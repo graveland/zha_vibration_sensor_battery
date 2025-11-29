@@ -1,16 +1,4 @@
 dependencies:
-  espressif/ds18b20:
-    component_hash: 
-      d676429d9f1f686b65ed895e418eb4b331477bcd5d63c27f43dc3d6a2de8f13b
-    dependencies:
-    - name: espressif/onewire_bus
-      registry_url: https://components.espressif.com/
-      require: private
-      version: ^1.0.0
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 0.1.1
   espressif/esp-zboss-lib:
     component_hash: 
       b0525e1008b69b5725348a0c62d89a32a51d9b6f7799134b52dc6018e1b48b40
@@ -33,27 +21,26 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.4.1
-  espressif/onewire_bus:
+  espressif/led_strip:
     component_hash: 
-      c4c781940d8bd988432b47ac3ee68479c69e14e01fdfba0b61365b233a3ba5d6
+      28c6509a727ef74925b372ed404772aeedf11cce10b78c3f69b3c66799095e2d
     dependencies:
     - name: idf
       require: private
-      version: '>=5.0'
+      version: '>=4.4'
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.0.2
+    version: 2.5.5
   idf:
     source:
       type: idf
     version: 5.5.1
 direct_dependencies:
-- espressif/ds18b20
 - espressif/esp-zboss-lib
 - espressif/esp-zigbee-lib
-- espressif/onewire_bus
+- espressif/led_strip
 - idf
-manifest_hash: 6463fc8f0ebdf8e6658c12147edf62a44a2e9833aa1b4907e48d4f538606f77a
+manifest_hash: 811092cf8dcf249642e2a61f14914015bef16752c311af8c3c5189f9c833d1ab
 target: esp32h2
 version: 2.0.0
