@@ -16,6 +16,8 @@
 #define WATER_LEAK_GPIO 14 /* GPIO pin for water leak sensor */
 #define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
 #define HEARTBEAT_INTERVAL_US (120000000) /* Heartbeat every 2m (microseconds) */
+#define REPORT_COOLDOWN_MS 60000 /* 1 minute cooldown between reports */
+#define SUPPRESSION_COUNTER_ATTR_ID 0xC000 /* Cumulative suppression counter */
 
 /* Attribute values in ZCL string format
  * The string should be started with the length of its own.
@@ -31,7 +33,7 @@
 #define OTA_UPGRADE_MANUFACTURER                                               \
   0x1234 /* Manufacturer code (must match OTA image) */
 #define OTA_UPGRADE_IMAGE_TYPE 0x567a /* Image type (must match OTA image) */
-#define OTA_UPGRADE_FILE_VERSION 0x00000002 /* Current firmware version */
+#define OTA_UPGRADE_FILE_VERSION 0x00000003 /* Current firmware version */
 #define OTA_UPGRADE_HW_VERSION 0x0001       /* Hardware version */
 #define OTA_UPGRADE_MAX_DATA_SIZE 64        /* OTA image block size */
 

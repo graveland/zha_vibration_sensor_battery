@@ -34,6 +34,10 @@ static esp_timer_handle_t heartbeat_timer = NULL;
 static led_strip_handle_t led_strip = NULL;
 static esp_timer_handle_t led_flash_timer = NULL;
 static bool led_flash_active = false;
+static esp_timer_handle_t report_cooldown_timer = NULL;
+static bool cooldown_timer_active = false;
+static bool current_gpio_state = false;
+static uint32_t total_suppressed_changes = 0;
 
 // OTA partition and handle (must be static for persistence across callbacks)
 static const esp_partition_t *s_ota_partition = NULL;
@@ -193,6 +197,9 @@ static esp_err_t zb_ota_upgrade_query_image_resp_handler(
   }
 }
 
+// Forward declarations
+static void handle_leak_state_change(bool leak_detected);
+
 // GPIO ISR handler - just sends event to queue
 static void IRAM_ATTR gpio_isr_handler(void *arg) {
   uint32_t gpio_num = (uint32_t)arg;
@@ -293,6 +300,19 @@ static void led_identify_blink(uint16_t identify_time) {
   } else {
     set_led_color(0, 0, 0);
   }
+}
+
+static void report_cooldown_timer_callback(void *arg) {
+  cooldown_timer_active = false;
+  ESP_LOGI(TAG, "Report cooldown expired");
+
+  // Check if current state differs from last reported state
+  if (current_gpio_state != last_leak_state) {
+    ESP_LOGI(TAG, "State changed during cooldown - sending report now");
+    handle_leak_state_change(current_gpio_state);
+  }
+
+  // Note: total_suppressed_changes is NEVER reset
 }
 
 static void init_water_leak_gpio(void) {
@@ -448,16 +468,35 @@ static void gpio_event_task(void *arg) {
           pdMS_TO_TICKS(DEBOUNCE_TIME_MS)) {
         last_interrupt_time = current_time;
 
-        // Read the current state immediately (debounce time check is sufficient)
-        bool leak_detected = read_water_leak_state();
+        // Read and store current GPIO state
+        current_gpio_state = read_water_leak_state();
         ESP_LOGI(TAG, "Debounced GPIO read: %s (level=%d)",
-                 leak_detected ? "LEAK" : "NO LEAK", gpio_get_level(WATER_LEAK_GPIO));
+                 current_gpio_state ? "LEAK" : "NO LEAK", gpio_get_level(WATER_LEAK_GPIO));
 
-        // Only report if state actually changed
-        if (leak_detected != last_leak_state) {
-          handle_leak_state_change(leak_detected);
+        // Check if cooldown timer is active
+        if (!cooldown_timer_active) {
+          // Timer not running - this is a NEW state transition
+          if (current_gpio_state != last_leak_state) {
+            ESP_LOGI(TAG, "New state transition (cooldown not active) - reporting");
+            handle_leak_state_change(current_gpio_state);
+
+            // Start cooldown timer
+            cooldown_timer_active = true;
+            esp_timer_start_once(report_cooldown_timer, REPORT_COOLDOWN_MS * 1000);
+            ESP_LOGI(TAG, "Started report cooldown timer (%d seconds)", REPORT_COOLDOWN_MS / 1000);
+          } else {
+            ESP_LOGI(TAG, "State unchanged, ignoring");
+          }
         } else {
-          ESP_LOGI(TAG, "State unchanged, ignoring");
+          // Timer IS running - this is potential noise
+          total_suppressed_changes++;
+          ESP_LOGI(TAG, "Report cooldown active - suppressing report (total: %lu)",
+                   total_suppressed_changes);
+
+          // Restart cooldown timer (reset to full duration)
+          esp_timer_stop(report_cooldown_timer);
+          esp_timer_start_once(report_cooldown_timer, REPORT_COOLDOWN_MS * 1000);
+          ESP_LOGI(TAG, "Restarted report cooldown timer");
         }
       } else {
         ESP_LOGI(TAG, "Interrupt ignored due to debounce");
@@ -478,6 +517,13 @@ static esp_err_t deferred_driver_init(void) {
 
   ESP_LOGI(TAG, "Initializing water leak sensor GPIO with interrupts");
   init_water_leak_gpio();
+
+  ESP_LOGI(TAG, "Initializing report cooldown timer");
+  const esp_timer_create_args_t cooldown_timer_args = {
+      .callback = &report_cooldown_timer_callback,
+      .name = "report_cooldown_timer"
+  };
+  ESP_ERROR_CHECK(esp_timer_create(&cooldown_timer_args, &report_cooldown_timer));
 
   ESP_LOGI(TAG, "Starting GPIO event handler task");
   xTaskCreate(gpio_event_task, "gpio_event_task", 4096, NULL, 10, NULL);
@@ -708,6 +754,18 @@ static esp_zb_cluster_list_t *custom_water_leak_sensor_clusters_create(
   // Add IAS Zone cluster for water leak detection
   esp_zb_attribute_list_t *ias_zone_cluster =
       esp_zb_ias_zone_cluster_create(ias_zone_cfg);
+
+  // Add cumulative suppression counter attribute with reporting
+  ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
+      ias_zone_cluster,
+      ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
+      SUPPRESSION_COUNTER_ATTR_ID,
+      ESP_ZB_ZCL_ATTR_TYPE_U32,
+      ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+      &total_suppressed_changes));
+  ESP_LOGI(TAG, "Added suppression counter attribute (0x%04X) with reporting",
+           SUPPRESSION_COUNTER_ATTR_ID);
+
   ESP_ERROR_CHECK(esp_zb_cluster_list_add_ias_zone_cluster(
       cluster_list, ias_zone_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
