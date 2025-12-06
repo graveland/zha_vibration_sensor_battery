@@ -38,8 +38,7 @@ const definition = {
     configure: async (device, coordinatorEndpoint) => {
         const endpoint = device.getEndpoint(1);
 
-        // Bind power config and IAS zone clusters
-        await endpoint.bind('genPowerCfg', coordinatorEndpoint);
+        // Bind IAS zone cluster
         await endpoint.bind('ssIasZone', coordinatorEndpoint);
 
         // IAS Zone devices use zone status change notifications, not periodic reporting
