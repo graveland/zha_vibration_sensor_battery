@@ -6,17 +6,16 @@
   false /* enable the install code policy for security */
 #define ED_AGING_TIMEOUT ESP_ZB_ED_AGING_TIMEOUT_64MIN
 #define ED_KEEP_ALIVE 3000 /* 3000 millisecond */
-#define HA_ESP_LEAK_START_ENDPOINT 1 /* esp water leak sensor device endpoint */
-#define HA_ESP_NUM_LEAK_SENSORS 1
+#define HA_ESP_VIBRATION_ENDPOINT 1 /* esp vibration sensor device endpoint */
 
 #define ESP_ZB_PRIMARY_CHANNEL_MASK                                            \
   ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK /* Zigbee primary channel mask use in   \
                                           the example */
 
-#define WATER_LEAK_GPIO 14 /* GPIO pin for water leak sensor */
+#define VIBRATION_GPIO 14 /* GPIO pin for vibration sensor (SW-420) */
 #define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
 #define HEARTBEAT_INTERVAL_US (120000000) /* Heartbeat every 2m (microseconds) */
-#define REPORT_COOLDOWN_MS 60000 /* 1 minute cooldown between reports */
+#define REPORT_COOLDOWN_MS 10000 /* 10 second cooldown between reports */
 #define SUPPRESSION_COUNTER_ATTR_ID 0xC000 /* Cumulative suppression counter */
 
 /* Attribute values in ZCL string format
@@ -26,14 +25,14 @@
   "\x09"                                                                       \
   "graveland"
 #define MODEL_IDENTIFIER                                                       \
-  "\x11"                                                                       \
-  "Water Leak Sensor"
+  "\x10"                                                                       \
+  "Vibration Sensor"
 
 /* OTA Upgrade configuration */
 #define OTA_UPGRADE_MANUFACTURER                                               \
   0x1234 /* Manufacturer code (must match OTA image) */
-#define OTA_UPGRADE_IMAGE_TYPE 0x567a /* Image type (must match OTA image) */
-#define OTA_UPGRADE_FILE_VERSION 0x00000005 /* Current firmware version */
+#define OTA_UPGRADE_IMAGE_TYPE 0x567b       /* Image type (must match OTA image) */
+#define OTA_UPGRADE_FILE_VERSION 0x00000001 /* Current firmware version */
 #define OTA_UPGRADE_HW_VERSION 0x0001       /* Hardware version */
 #define OTA_UPGRADE_MAX_DATA_SIZE 64        /* OTA image block size */
 

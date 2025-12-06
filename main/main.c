@@ -14,19 +14,19 @@
 #include "driver/gpio.h"
 #include "led_strip.h"
 
-static const char *TAG = "WATER_LEAK_SENSOR";
+static const char *TAG = "VIBRATION_SENSOR";
 
 // IAS Zone status bits
-#define IAS_ZONE_STATUS_ALARM1 (1 << 0)     // Water leak detected
+#define IAS_ZONE_STATUS_ALARM1 (1 << 0)     // Vibration detected
 
-// IAS Zone type for water sensor
-#define IAS_ZONE_TYPE_WATER_SENSOR 0x002a
+// IAS Zone type for vibration/movement sensor
+#define IAS_ZONE_TYPE_VIBRATION_SENSOR 0x0028
 
 // Debounce settings
 #define DEBOUNCE_TIME_MS 50
-#define MIN_ALARM_DURATION_MS 5000 // Keep alarm active for at least 5 seconds
+#define MIN_ALARM_DURATION_MS 2000 // Keep alarm active for at least 2 seconds
 
-static bool last_leak_state = false;
+static bool last_vibration_state = false;
 static QueueHandle_t gpio_evt_queue = NULL;
 static uint8_t ias_zone_id = 0xFF; // Will be set during enrollment
 static int64_t alarm_start_time = 0; // Track when alarm started
@@ -209,7 +209,7 @@ static esp_err_t zb_ota_upgrade_query_image_resp_handler(
 }
 
 // Forward declarations
-static void handle_leak_state_change(bool leak_detected);
+static void handle_vibration_state_change(bool vibration_detected);
 
 // GPIO ISR handler - just sends event to queue
 static void IRAM_ATTR gpio_isr_handler(void *arg) {
@@ -252,7 +252,7 @@ static void led_flash_timer_callback(void *arg) {
 
   if (led_flash_active) {
     if (flash_state) {
-      // Flash RED for leak alarm
+      // Flash RED for vibration alarm
       set_led_color(255, 0, 0);
     } else {
       set_led_color(0, 0, 0);
@@ -318,23 +318,23 @@ static void report_cooldown_timer_callback(void *arg) {
   ESP_LOGI(TAG, "Report cooldown expired");
 
   // Check if current state differs from last reported state
-  if (current_gpio_state != last_leak_state) {
+  if (current_gpio_state != last_vibration_state) {
     ESP_LOGI(TAG, "State changed during cooldown - sending report now");
-    handle_leak_state_change(current_gpio_state);
+    handle_vibration_state_change(current_gpio_state);
   }
 
   // Note: total_suppressed_changes is NEVER reset
 }
 
-static void init_water_leak_gpio(void) {
+static void init_vibration_gpio(void) {
   // Create queue for GPIO events
   gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
 
   // Configure GPIO
   gpio_config_t io_conf = {
-      .pin_bit_mask = (1ULL << WATER_LEAK_GPIO),
+      .pin_bit_mask = (1ULL << VIBRATION_GPIO),
       .mode = GPIO_MODE_INPUT,
-      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
       .intr_type = GPIO_INTR_ANYEDGE,  // Trigger on both rising and falling edges
   };
@@ -347,13 +347,13 @@ static void init_water_leak_gpio(void) {
   }
 
   // Attach interrupt handler
-  ESP_ERROR_CHECK(gpio_isr_handler_add(WATER_LEAK_GPIO, gpio_isr_handler,
-                                       (void *)WATER_LEAK_GPIO));
+  ESP_ERROR_CHECK(gpio_isr_handler_add(VIBRATION_GPIO, gpio_isr_handler,
+                                       (void *)VIBRATION_GPIO));
 
   // Read and log initial GPIO state
-  int level = gpio_get_level(WATER_LEAK_GPIO);
-  ESP_LOGI(TAG, "Water leak sensor GPIO %d initialized with interrupts, current level: %d",
-           WATER_LEAK_GPIO, level);
+  int level = gpio_get_level(VIBRATION_GPIO);
+  ESP_LOGI(TAG, "Vibration sensor GPIO %d initialized with interrupts, current level: %d",
+           VIBRATION_GPIO, level);
 }
 
 void report_ias_zone_status(uint8_t ep, uint16_t zone_status, uint8_t zone_id) {
@@ -374,15 +374,15 @@ void report_ias_zone_status(uint8_t ep, uint16_t zone_status, uint8_t zone_id) {
            zone_status, zone_id);
 }
 
-void esp_app_leak_sensor_handler(bool leak_detected, uint8_t endpoint) {
+void esp_app_vibration_sensor_handler(bool vibration_detected, uint8_t endpoint) {
   uint16_t zone_status = 0;
 
-  if (leak_detected) {
+  if (vibration_detected) {
     zone_status = IAS_ZONE_STATUS_ALARM1;
-    ESP_LOGW(TAG, "WATER LEAK DETECTED on endpoint %d!", endpoint);
+    ESP_LOGW(TAG, "VIBRATION DETECTED on endpoint %d!", endpoint);
   } else {
     zone_status = 0;
-    ESP_LOGI(TAG, "No water leak on endpoint %d", endpoint);
+    ESP_LOGI(TAG, "No vibration on endpoint %d", endpoint);
   }
 
   esp_zb_lock_acquire(portMAX_DELAY);
@@ -396,23 +396,23 @@ void esp_app_leak_sensor_handler(bool leak_detected, uint8_t endpoint) {
   report_ias_zone_status(endpoint, zone_status, ias_zone_id);
 }
 
-static bool read_water_leak_state(void) {
-  // Read GPIO - LOW (0) indicates water detected (sensor shorted to ground)
-  // HIGH (1) indicates no water (sensor open)
-  int level = gpio_get_level(WATER_LEAK_GPIO);
-  return (level == 0);
+static bool read_vibration_state(void) {
+  // Read GPIO - HIGH (1) indicates vibration detected (SW-420 digital output)
+  // LOW (0) indicates no vibration
+  int level = gpio_get_level(VIBRATION_GPIO);
+  return (level == 1);
 }
 
 static void heartbeat_timer_callback(void *arg) {
   // Send periodic heartbeat to coordinator
-  bool current_state = read_water_leak_state();
+  bool current_state = read_vibration_state();
 
   ESP_LOGI(TAG, "Heartbeat: sending current status to coordinator (%s)",
-           current_state ? "LEAK" : "NO LEAK");
+           current_state ? "VIBRATION" : "NO VIBRATION");
 
   // Re-send current zone status as heartbeat
   uint16_t zone_status = current_state ? IAS_ZONE_STATUS_ALARM1 : 0;
-  report_ias_zone_status(HA_ESP_LEAK_START_ENDPOINT, zone_status, ias_zone_id);
+  report_ias_zone_status(HA_ESP_VIBRATION_ENDPOINT, zone_status, ias_zone_id);
 }
 
 static void start_heartbeat_timer(void) {
@@ -427,19 +427,19 @@ static void start_heartbeat_timer(void) {
            (int)(HEARTBEAT_INTERVAL_US / 1000000));
 }
 
-static void handle_leak_state_change(bool leak_detected) {
-  ESP_LOGI(TAG, "Water leak state changed: %s -> %s",
-           last_leak_state ? "LEAK" : "NO LEAK",
-           leak_detected ? "LEAK" : "NO LEAK");
+static void handle_vibration_state_change(bool vibration_detected) {
+  ESP_LOGI(TAG, "Vibration state changed: %s -> %s",
+           last_vibration_state ? "VIBRATION" : "NO VIBRATION",
+           vibration_detected ? "VIBRATION" : "NO VIBRATION");
 
-  if (leak_detected) {
-    // Water leak detected - start alarm
+  if (vibration_detected) {
+    // Vibration detected - start alarm
     alarm_start_time = esp_timer_get_time();
-    last_leak_state = true;
+    last_vibration_state = true;
     start_led_flash(); // Start flashing RED LED
-    esp_app_leak_sensor_handler(true, HA_ESP_LEAK_START_ENDPOINT);
+    esp_app_vibration_sensor_handler(true, HA_ESP_VIBRATION_ENDPOINT);
   } else {
-    // Water cleared - check if minimum alarm duration has elapsed
+    // Vibration stopped - check if minimum alarm duration has elapsed
     int64_t current_time = esp_timer_get_time();
     int64_t alarm_duration_ms = (current_time - alarm_start_time) / 1000;
 
@@ -453,9 +453,9 @@ static void handle_leak_state_change(bool leak_detected) {
 
     // Clear alarm
     alarm_start_time = 0;
-    last_leak_state = false;
+    last_vibration_state = false;
     stop_led_flash(); // Stop flashing LED
-    esp_app_leak_sensor_handler(false, HA_ESP_LEAK_START_ENDPOINT);
+    esp_app_vibration_sensor_handler(false, HA_ESP_VIBRATION_ENDPOINT);
   }
 }
 
@@ -465,9 +465,9 @@ static void gpio_event_task(void *arg) {
   TickType_t last_interrupt_time = 0;
 
   // Read initial state
-  last_leak_state = read_water_leak_state();
-  ESP_LOGI(TAG, "GPIO event task started. Initial water leak state: %s",
-           last_leak_state ? "LEAK" : "NO LEAK");
+  last_vibration_state = read_vibration_state();
+  ESP_LOGI(TAG, "GPIO event task started. Initial vibration state: %s",
+           last_vibration_state ? "VIBRATION" : "NO VIBRATION");
 
   while (1) {
     if (xQueueReceive(gpio_evt_queue, &gpio_num, portMAX_DELAY)) {
@@ -480,16 +480,16 @@ static void gpio_event_task(void *arg) {
         last_interrupt_time = current_time;
 
         // Read and store current GPIO state
-        current_gpio_state = read_water_leak_state();
+        current_gpio_state = read_vibration_state();
         ESP_LOGI(TAG, "Debounced GPIO read: %s (level=%d)",
-                 current_gpio_state ? "LEAK" : "NO LEAK", gpio_get_level(WATER_LEAK_GPIO));
+                 current_gpio_state ? "VIBRATION" : "NO VIBRATION", gpio_get_level(VIBRATION_GPIO));
 
         // Check if cooldown timer is active
         if (!cooldown_timer_active) {
           // Timer not running - this is a NEW state transition
-          if (current_gpio_state != last_leak_state) {
+          if (current_gpio_state != last_vibration_state) {
             ESP_LOGI(TAG, "New state transition (cooldown not active) - reporting");
-            handle_leak_state_change(current_gpio_state);
+            handle_vibration_state_change(current_gpio_state);
 
             // Start cooldown timer
             cooldown_timer_active = true;
@@ -506,7 +506,7 @@ static void gpio_event_task(void *arg) {
 
           // Update the suppression counter attribute in the Zigbee stack
           esp_zb_lock_acquire(portMAX_DELAY);
-          esp_zb_zcl_set_attribute_val(HA_ESP_LEAK_START_ENDPOINT,
+          esp_zb_zcl_set_attribute_val(HA_ESP_VIBRATION_ENDPOINT,
                                        ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
                                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                        SUPPRESSION_COUNTER_ATTR_ID,
@@ -535,8 +535,8 @@ static esp_err_t deferred_driver_init(void) {
   ESP_LOGI(TAG, "Initializing RGB LED");
   init_rgb_led();
 
-  ESP_LOGI(TAG, "Initializing water leak sensor GPIO with interrupts");
-  init_water_leak_gpio();
+  ESP_LOGI(TAG, "Initializing vibration sensor GPIO with interrupts");
+  init_vibration_gpio();
 
   ESP_LOGI(TAG, "Initializing report cooldown timer");
   const esp_timer_create_args_t cooldown_timer_args = {
@@ -584,9 +584,9 @@ static esp_err_t zb_ias_zone_cluster_attr_handler(
 
       // After CIE address is set, send initial zone status
       vTaskDelay(pdMS_TO_TICKS(500)); // Small delay to let enrollment complete
-      bool leak_detected = read_water_leak_state();
-      esp_app_leak_sensor_handler(leak_detected, message->info.dst_endpoint);
-      ESP_LOGI(TAG, "Sent initial zone status: %s", leak_detected ? "LEAK" : "NO LEAK");
+      bool vibration_detected = read_vibration_state();
+      esp_app_vibration_sensor_handler(vibration_detected, message->info.dst_endpoint);
+      ESP_LOGI(TAG, "Sent initial zone status: %s", vibration_detected ? "VIBRATION" : "NO VIBRATION");
 
       // Start heartbeat timer now that we're enrolled
       if (heartbeat_timer == NULL) {
@@ -678,7 +678,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
         // Check if already enrolled and start heartbeat timer
         esp_zb_lock_acquire(portMAX_DELAY);
         esp_zb_zcl_attr_t *zone_id_attr = esp_zb_zcl_get_attribute(
-            HA_ESP_LEAK_START_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
+            HA_ESP_VIBRATION_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
             ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_IAS_ZONE_ZONEID_ID);
         if (zone_id_attr) {
           ias_zone_id = *(uint8_t *)zone_id_attr->data_p;
@@ -691,9 +691,9 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
 
           // Send current status
           vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for network to be fully ready
-          bool leak_detected = read_water_leak_state();
-          esp_app_leak_sensor_handler(leak_detected, HA_ESP_LEAK_START_ENDPOINT);
-          ESP_LOGI(TAG, "Sent initial zone status on reboot: %s", leak_detected ? "LEAK" : "NO LEAK");
+          bool vibration_detected = read_vibration_state();
+          esp_app_vibration_sensor_handler(vibration_detected, HA_ESP_VIBRATION_ENDPOINT);
+          ESP_LOGI(TAG, "Sent initial zone status on reboot: %s", vibration_detected ? "VIBRATION" : "NO VIBRATION");
         }
         esp_zb_lock_release();
       }
@@ -722,7 +722,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
       ESP_LOGI(TAG, "Setting IAS CIE address");
       esp_zb_lock_acquire(portMAX_DELAY);
       esp_zb_zcl_set_attribute_val(
-          HA_ESP_LEAK_START_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
+          HA_ESP_VIBRATION_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
           ESP_ZB_ZCL_ATTR_IAS_ZONE_IAS_CIE_ADDRESS_ID, cie_addr, false);
       esp_zb_lock_release();
@@ -742,7 +742,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
   }
 }
 
-static esp_zb_cluster_list_t *custom_water_leak_sensor_clusters_create(
+static esp_zb_cluster_list_t *custom_vibration_sensor_clusters_create(
     esp_zb_ias_zone_cluster_cfg_t *ias_zone_cfg) {
   esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
 
@@ -771,7 +771,7 @@ static esp_zb_cluster_list_t *custom_water_leak_sensor_clusters_create(
   ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(
       cluster_list, identify_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
-  // Add IAS Zone cluster for water leak detection
+  // Add IAS Zone cluster for vibration detection
   esp_zb_attribute_list_t *ias_zone_cluster =
       esp_zb_ias_zone_cluster_create(ias_zone_cfg);
 
@@ -843,7 +843,7 @@ static esp_zb_cluster_list_t *custom_water_leak_sensor_clusters_create(
   return cluster_list;
 }
 
-static void custom_water_leak_sensor_ep_create(
+static void custom_vibration_sensor_ep_create(
     esp_zb_ep_list_t *ep_list, uint8_t endpoint_id,
     esp_zb_ias_zone_cluster_cfg_t *ias_zone_cfg) {
   esp_zb_endpoint_config_t endpoint_config = {
@@ -852,7 +852,7 @@ static void custom_water_leak_sensor_ep_create(
       .app_device_id = ESP_ZB_HA_IAS_ZONE_ID,
       .app_device_version = 0};
   esp_zb_cluster_list_t *cluster_list =
-      custom_water_leak_sensor_clusters_create(ias_zone_cfg);
+      custom_vibration_sensor_clusters_create(ias_zone_cfg);
   esp_zb_ep_list_add_ep(ep_list, cluster_list, endpoint_config);
 }
 
@@ -863,18 +863,14 @@ static void esp_zb_task(void *pvParameters) {
 
   esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
 
-  for (uint8_t ep = HA_ESP_LEAK_START_ENDPOINT;
-       ep < (HA_ESP_LEAK_START_ENDPOINT + HA_ESP_NUM_LEAK_SENSORS); ep++) {
-    esp_zb_ias_zone_cluster_cfg_t ias_zone_cfg = {
-        .zone_state = 0x00,  // Not enrolled
-        .zone_type = IAS_ZONE_TYPE_WATER_SENSOR,
-        .zone_status = 0x0000,  // No alarm
-    };
+  esp_zb_ias_zone_cluster_cfg_t ias_zone_cfg = {
+      .zone_state = 0x00,  // Not enrolled
+      .zone_type = IAS_ZONE_TYPE_VIBRATION_SENSOR,
+      .zone_status = 0x0000,  // No alarm
+  };
 
-    ESP_LOGI(TAG, "Creating water leak sensor endpoint: %d", ep);
-    custom_water_leak_sensor_ep_create(ep_list, ep, &ias_zone_cfg);
-  }
-  ESP_LOGI(TAG, "Total water leak sensor endpoints created: %d", HA_ESP_NUM_LEAK_SENSORS);
+  ESP_LOGI(TAG, "Creating vibration sensor endpoint: %d", HA_ESP_VIBRATION_ENDPOINT);
+  custom_vibration_sensor_ep_create(ep_list, HA_ESP_VIBRATION_ENDPOINT, &ias_zone_cfg);
 
   // Register OTA upgrade action handler
   esp_zb_core_action_handler_register(esp_zb_action_handler);

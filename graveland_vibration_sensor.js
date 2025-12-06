@@ -4,13 +4,13 @@ const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const e = exposes.presets;
 
 const definition = {
-    zigbeeModel: ['Water Leak Sensor'],
-    model: 'Water Leak Sensor',
+    zigbeeModel: ['Vibration Sensor'],
+    model: 'Vibration Sensor',
     vendor: 'graveland',
-    description: 'Water leak sensor (mains powered router)',
+    description: 'Vibration sensor (mains powered router)',
     extend: [
         iasZoneAlarm({
-            zoneType: 'water_leak',
+            zoneType: 'vibration',
             zoneAttributes: ['alarm_1'],
         }),
         identify(),
