@@ -35,15 +35,6 @@ const definition = {
             });
         },
     },
-    configure: async (device, coordinatorEndpoint) => {
-        const endpoint = device.getEndpoint(1);
-
-        // Bind IAS zone cluster
-        await endpoint.bind('ssIasZone', coordinatorEndpoint);
-
-        // IAS Zone devices use zone status change notifications, not periodic reporting
-        // The device will automatically send notifications when the zone status changes
-    },
 };
 
 module.exports = definition;
