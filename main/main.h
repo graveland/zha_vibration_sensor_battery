@@ -14,9 +14,17 @@
 
 #define VIBRATION_GPIO 14 /* GPIO pin for vibration sensor (SW-420) */
 #define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
-#define HEARTBEAT_INTERVAL_US (120000000) /* Heartbeat every 2m (microseconds) */
+#define STATUS_LED_GPIO 13 /* GPIO pin for board status LED (disabled) */
+#define HEARTBEAT_INTERVAL_US (1800000000ULL) /* Heartbeat every 30m (microseconds) */
 #define REPORT_COOLDOWN_MS 10000 /* 10 second cooldown between reports */
+#define ACTIVITY_TIMEOUT_MS 30000 /* Stay awake 30s after last vibration */
 #define SUPPRESSION_COUNTER_ATTR_ID 0xC000 /* Cumulative suppression counter */
+
+/* Battery ADC configuration (LiFePO4 3.2V cell) */
+#define BATTERY_ADC_CHANNEL ADC_CHANNEL_4 /* GPIO5 = ADC1_CHANNEL_4 on ESP32-H2 */
+#define BATTERY_VOLTAGE_DIVIDER 0.5f /* 100k/100k divider ratio */
+#define BATTERY_MIN_MV 2800 /* 2.8V = 0% (LiFePO4 cutoff) */
+#define BATTERY_MAX_MV 3600 /* 3.6V = 100% (LiFePO4 full) */
 
 /* Attribute values in ZCL string format
  * The string should be started with the length of its own.
@@ -25,13 +33,13 @@
   "\x09"                                                                       \
   "graveland"
 #define MODEL_IDENTIFIER                                                       \
-  "\x10"                                                                       \
-  "Vibration Sensor"
+  "\x1a"                                                                       \
+  "Vibration Sensor (battery)"
 
 /* OTA Upgrade configuration */
 #define OTA_UPGRADE_MANUFACTURER                                               \
   0x1234 /* Manufacturer code (must match OTA image) */
-#define OTA_UPGRADE_IMAGE_TYPE 0x567b       /* Image type (must match OTA image) */
+#define OTA_UPGRADE_IMAGE_TYPE 0x567c       /* Image type (must match OTA image) */
 #define OTA_UPGRADE_FILE_VERSION 0x00000001 /* Current firmware version */
 #define OTA_UPGRADE_HW_VERSION 0x0001       /* Hardware version */
 #define OTA_UPGRADE_MAX_DATA_SIZE 64        /* OTA image block size */

@@ -1,19 +1,20 @@
-const {iasZoneAlarm, identify, numeric} = require('zigbee-herdsman-converters/lib/modernExtend');
+const {iasZoneAlarm, identify, numeric, battery} = require('zigbee-herdsman-converters/lib/modernExtend');
 const ota = require('zigbee-herdsman-converters/lib/ota');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const e = exposes.presets;
 
 const definition = {
-    zigbeeModel: ['Vibration Sensor'],
-    model: 'Vibration Sensor',
+    zigbeeModel: ['Vibration Sensor (battery)'],
+    model: 'Vibration Sensor (battery)',
     vendor: 'graveland',
-    description: 'Vibration sensor (mains powered router)',
+    description: 'Vibration sensor (battery powered)',
     extend: [
         iasZoneAlarm({
             zoneType: 'vibration',
             zoneAttributes: ['alarm_1'],
         }),
         identify(),
+        battery(),
         numeric({
             name: 'suppressed_changes',
             cluster: 'ssIasZone',

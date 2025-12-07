@@ -13,6 +13,10 @@
 
 #include "driver/gpio.h"
 #include "led_strip.h"
+#include "esp_sleep.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 
 static const char *TAG = "VIBRATION_SENSOR";
 
@@ -38,6 +42,14 @@ static esp_timer_handle_t report_cooldown_timer = NULL;
 static bool cooldown_timer_active = false;
 static bool current_gpio_state = false;
 static uint32_t total_suppressed_changes = 0;
+
+// Activity timer for deep sleep
+static esp_timer_handle_t activity_timer = NULL;
+static esp_sleep_wakeup_cause_t wakeup_cause = ESP_SLEEP_WAKEUP_UNDEFINED;
+
+// Battery ADC handles
+static adc_oneshot_unit_handle_t adc_handle = NULL;
+static adc_cali_handle_t adc_cali_handle = NULL;
 
 // OTA partition and handle (must be static for persistence across callbacks)
 static const esp_partition_t *s_ota_partition = NULL;
@@ -210,6 +222,152 @@ static esp_err_t zb_ota_upgrade_query_image_resp_handler(
 
 // Forward declarations
 static void handle_vibration_state_change(bool vibration_detected);
+
+// Deep sleep functions
+static void enter_deep_sleep(void) {
+  // Stop any running timers before sleep
+  if (activity_timer) {
+    esp_timer_stop(activity_timer);
+  }
+  if (heartbeat_timer) {
+    esp_timer_stop(heartbeat_timer);
+  }
+  if (led_flash_timer) {
+    esp_timer_stop(led_flash_timer);
+  }
+  if (report_cooldown_timer) {
+    esp_timer_stop(report_cooldown_timer);
+  }
+
+  // Turn off LED
+  if (led_strip) {
+    led_strip_clear(led_strip);
+  }
+
+  // Configure GPIO 14 as wakeup source using ext1 (ESP32-H2/C6 only have ext1)
+  // Wake on HIGH level (vibration detected)
+  esp_sleep_enable_ext1_wakeup(1ULL << VIBRATION_GPIO, ESP_EXT1_WAKEUP_ANY_HIGH);
+
+  // Configure timer for 30-minute heartbeat
+  esp_sleep_enable_timer_wakeup(HEARTBEAT_INTERVAL_US);
+
+  ESP_LOGI(TAG, "Entering deep sleep (GPIO wakeup + %llu min timer)...",
+           HEARTBEAT_INTERVAL_US / 60000000ULL);
+
+  // Give time for log to flush
+  vTaskDelay(pdMS_TO_TICKS(100));
+
+  esp_deep_sleep_start();
+}
+
+static esp_sleep_wakeup_cause_t check_wakeup_cause(void) {
+  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  switch (cause) {
+  case ESP_SLEEP_WAKEUP_EXT1:
+    ESP_LOGI(TAG, "Woke up from GPIO (vibration detected)");
+    break;
+  case ESP_SLEEP_WAKEUP_TIMER:
+    ESP_LOGI(TAG, "Woke up from timer (heartbeat)");
+    break;
+  default:
+    ESP_LOGI(TAG, "Cold boot or reset (cause=%d)", cause);
+    break;
+  }
+  return cause;
+}
+
+static void activity_timer_callback(void *arg) {
+  ESP_LOGI(TAG, "Activity timeout - no vibration for %d seconds, entering deep sleep",
+           ACTIVITY_TIMEOUT_MS / 1000);
+  enter_deep_sleep();
+}
+
+static void reset_activity_timer(void) {
+  if (activity_timer) {
+    esp_timer_stop(activity_timer);
+    esp_timer_start_once(activity_timer, (uint64_t)ACTIVITY_TIMEOUT_MS * 1000);
+    ESP_LOGD(TAG, "Activity timer reset (%d seconds)", ACTIVITY_TIMEOUT_MS / 1000);
+  }
+}
+
+// Battery ADC functions
+static void init_battery_adc(void) {
+  adc_oneshot_unit_init_cfg_t init_cfg = {
+      .unit_id = ADC_UNIT_1,
+  };
+  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
+
+  adc_oneshot_chan_cfg_t chan_cfg = {
+      .atten = ADC_ATTEN_DB_12,
+      .bitwidth = ADC_BITWIDTH_DEFAULT,
+  };
+  ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, BATTERY_ADC_CHANNEL, &chan_cfg));
+
+  // Calibration using curve fitting (supported on ESP32-H2/C6)
+  adc_cali_curve_fitting_config_t cali_cfg = {
+      .unit_id = ADC_UNIT_1,
+      .chan = BATTERY_ADC_CHANNEL,
+      .atten = ADC_ATTEN_DB_12,
+      .bitwidth = ADC_BITWIDTH_DEFAULT,
+  };
+  esp_err_t ret = adc_cali_create_scheme_curve_fitting(&cali_cfg, &adc_cali_handle);
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "ADC calibration not available, using raw values");
+    adc_cali_handle = NULL;
+  }
+
+  ESP_LOGI(TAG, "Battery ADC initialized on channel %d", BATTERY_ADC_CHANNEL);
+}
+
+static uint8_t read_battery_percentage(void) {
+  if (!adc_handle) {
+    return 200; // Return full if ADC not initialized
+  }
+
+  int raw = 0;
+  int voltage_mv = 0;
+
+  esp_err_t ret = adc_oneshot_read(adc_handle, BATTERY_ADC_CHANNEL, &raw);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "ADC read failed: %s", esp_err_to_name(ret));
+    return 200;
+  }
+
+  if (adc_cali_handle) {
+    adc_cali_raw_to_voltage(adc_cali_handle, raw, &voltage_mv);
+  } else {
+    // Approximate conversion without calibration (12-bit ADC, 3.1V max at DB_12)
+    voltage_mv = (raw * 3100) / 4095;
+  }
+
+  // Convert ADC voltage to actual battery voltage using divider ratio
+  int battery_mv = (int)(voltage_mv / BATTERY_VOLTAGE_DIVIDER);
+
+  // Calculate percentage (0-100) then scale to Zigbee (0-200)
+  int pct = ((battery_mv - BATTERY_MIN_MV) * 100) / (BATTERY_MAX_MV - BATTERY_MIN_MV);
+  pct = (pct < 0) ? 0 : (pct > 100) ? 100 : pct;
+
+  uint8_t zigbee_pct = (uint8_t)(pct * 2);
+
+  ESP_LOGI(TAG, "Battery: raw=%d, adc_mv=%d, battery_mv=%d, pct=%d%%, zigbee=%d",
+           raw, voltage_mv, battery_mv, pct, zigbee_pct);
+
+  return zigbee_pct;
+}
+
+static void report_battery_percentage(void) {
+  uint8_t battery_pct = read_battery_percentage();
+
+  esp_zb_lock_acquire(portMAX_DELAY);
+  esp_zb_zcl_set_attribute_val(HA_ESP_VIBRATION_ENDPOINT,
+                               ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                               0x0021, // BatteryPercentageRemaining
+                               &battery_pct, true);
+  esp_zb_lock_release();
+
+  ESP_LOGI(TAG, "Reported battery percentage: %d%%", battery_pct / 2);
+}
 
 // GPIO ISR handler - just sends event to queue
 static void IRAM_ATTR gpio_isr_handler(void *arg) {
@@ -413,6 +571,9 @@ static void heartbeat_timer_callback(void *arg) {
   // Re-send current zone status as heartbeat
   uint16_t zone_status = current_state ? IAS_ZONE_STATUS_ALARM1 : 0;
   report_ias_zone_status(HA_ESP_VIBRATION_ENDPOINT, zone_status, ias_zone_id);
+
+  // Also report battery level with each heartbeat
+  report_battery_percentage();
 }
 
 static void start_heartbeat_timer(void) {
@@ -423,14 +584,17 @@ static void start_heartbeat_timer(void) {
 
   ESP_ERROR_CHECK(esp_timer_create(&heartbeat_timer_args, &heartbeat_timer));
   ESP_ERROR_CHECK(esp_timer_start_periodic(heartbeat_timer, HEARTBEAT_INTERVAL_US));
-  ESP_LOGI(TAG, "Heartbeat timer started (interval: %d seconds)",
-           (int)(HEARTBEAT_INTERVAL_US / 1000000));
+  ESP_LOGI(TAG, "Heartbeat timer started (interval: %llu minutes)",
+           HEARTBEAT_INTERVAL_US / 60000000ULL);
 }
 
 static void handle_vibration_state_change(bool vibration_detected) {
   ESP_LOGI(TAG, "Vibration state changed: %s -> %s",
            last_vibration_state ? "VIBRATION" : "NO VIBRATION",
            vibration_detected ? "VIBRATION" : "NO VIBRATION");
+
+  // Reset activity timer on any state change (keeps device awake during activity)
+  reset_activity_timer();
 
   if (vibration_detected) {
     // Vibration detected - start alarm
@@ -532,8 +696,23 @@ static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask) {
 }
 
 static esp_err_t deferred_driver_init(void) {
+  // Disable status LED on GPIO 13
+  gpio_config_t status_led_conf = {
+      .pin_bit_mask = (1ULL << STATUS_LED_GPIO),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&status_led_conf);
+  gpio_set_level(STATUS_LED_GPIO, 0);
+  ESP_LOGI(TAG, "Status LED on GPIO %d disabled", STATUS_LED_GPIO);
+
   ESP_LOGI(TAG, "Initializing RGB LED");
   init_rgb_led();
+
+  ESP_LOGI(TAG, "Initializing battery ADC");
+  init_battery_adc();
 
   ESP_LOGI(TAG, "Initializing vibration sensor GPIO with interrupts");
   init_vibration_gpio();
@@ -544,6 +723,13 @@ static esp_err_t deferred_driver_init(void) {
       .name = "report_cooldown_timer"
   };
   ESP_ERROR_CHECK(esp_timer_create(&cooldown_timer_args, &report_cooldown_timer));
+
+  ESP_LOGI(TAG, "Initializing activity timer for deep sleep");
+  const esp_timer_create_args_t activity_timer_args = {
+      .callback = &activity_timer_callback,
+      .name = "activity_timer"
+  };
+  ESP_ERROR_CHECK(esp_timer_create(&activity_timer_args, &activity_timer));
 
   ESP_LOGI(TAG, "Starting GPIO event handler task");
   xTaskCreate(gpio_event_task, "gpio_event_task", 4096, NULL, 10, NULL);
@@ -588,10 +774,16 @@ static esp_err_t zb_ias_zone_cluster_attr_handler(
       esp_app_vibration_sensor_handler(vibration_detected, message->info.dst_endpoint);
       ESP_LOGI(TAG, "Sent initial zone status: %s", vibration_detected ? "VIBRATION" : "NO VIBRATION");
 
+      // Report initial battery level
+      report_battery_percentage();
+
       // Start heartbeat timer now that we're enrolled
       if (heartbeat_timer == NULL) {
         start_heartbeat_timer();
       }
+
+      // Start activity timer for deep sleep
+      reset_activity_timer();
     }
   }
 
@@ -694,6 +886,12 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
           bool vibration_detected = read_vibration_state();
           esp_app_vibration_sensor_handler(vibration_detected, HA_ESP_VIBRATION_ENDPOINT);
           ESP_LOGI(TAG, "Sent initial zone status on reboot: %s", vibration_detected ? "VIBRATION" : "NO VIBRATION");
+
+          // Report battery level
+          report_battery_percentage();
+
+          // Start activity timer for deep sleep
+          reset_activity_timer();
         }
         esp_zb_lock_release();
       }
@@ -741,7 +939,7 @@ static esp_zb_cluster_list_t *custom_vibration_sensor_clusters_create(
   // Add Basic cluster for device identification
   esp_zb_basic_cluster_cfg_t basic_cfg = {
       .zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
-      .power_source = 0x01,  // Mains (single phase) - this is a wall-powered router device
+      .power_source = 0x03,  // Battery - this is a battery-powered end device
   };
   esp_zb_attribute_list_t *basic_cluster =
       esp_zb_basic_cluster_create(&basic_cfg);
@@ -781,18 +979,18 @@ static esp_zb_cluster_list_t *custom_vibration_sensor_clusters_create(
   ESP_ERROR_CHECK(esp_zb_cluster_list_add_ias_zone_cluster(
       cluster_list, ias_zone_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
-  // Add Power Configuration cluster to report mains power
+  // Add Power Configuration cluster to report battery status
   esp_zb_power_config_cluster_cfg_t power_cfg = {
-      .main_voltage = 0xffff, // Unknown mains voltage
+      .main_voltage = 0xffff, // Not applicable for battery device
       .main_alarm_mask = 0x00, // No alarms
   };
   esp_zb_attribute_list_t *power_cluster =
       esp_zb_power_config_cluster_create(&power_cfg);
 
-  // Set battery percentage to 200 (0xC8) which indicates "AC/Mains powered" per Zigbee spec
-  // This prevents battery low warnings in Zigbee2MQTT
+  // Set initial battery percentage (will be updated with actual reading later)
   // Using raw attribute ID 0x0021 (BatteryPercentageRemaining)
-  uint8_t battery_percentage = 200;
+  // Zigbee uses 0-200 scale where 200 = 100%
+  uint8_t battery_percentage = 200; // Start with 100%, will be updated on init
   ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(
       power_cluster, 0x0021,
       &battery_percentage));
@@ -849,8 +1047,8 @@ static void custom_vibration_sensor_ep_create(
 }
 
 static void esp_zb_task(void *pvParameters) {
-  /* Initialize Zigbee stack */
-  esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZR_CONFIG();
+  /* Initialize Zigbee stack as End Device for battery operation */
+  esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
   esp_zb_init(&zb_nwk_cfg);
 
   esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
@@ -879,6 +1077,9 @@ static void esp_zb_task(void *pvParameters) {
 }
 
 void app_main(void) {
+  // Check why we woke up (GPIO interrupt, timer, or cold boot)
+  wakeup_cause = check_wakeup_cause();
+
   esp_zb_platform_config_t config = {
       .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
       .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
