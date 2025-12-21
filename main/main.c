@@ -10,6 +10,7 @@
 #include "ha/esp_zigbee_ha_standard.h"
 #include "nvs_flash.h"
 #include "string.h"
+#include "nvs_functions.h"
 
 #include "driver/gpio.h"
 #include "led_strip.h"
@@ -41,11 +42,20 @@ static bool led_flash_active = false;
 static esp_timer_handle_t report_cooldown_timer = NULL;
 static bool cooldown_timer_active = false;
 static bool current_gpio_state = false;
-static uint32_t total_suppressed_changes = 0;
 
 // Activity timer for deep sleep
 static esp_timer_handle_t activity_timer = NULL;
 static esp_sleep_wakeup_cause_t wakeup_cause = ESP_SLEEP_WAKEUP_UNDEFINED;
+
+// Diagnostics - reset count
+static uint16_t zb_reset_count = 0;
+
+// Network watchdog - detect and recover from network disconnection
+static bool network_joined = false;
+static int network_not_joined_count = 0;
+
+// Battery percentage for Zigbee attribute (must be static, not local)
+static uint8_t zb_battery_percentage = 200;
 
 // Battery ADC handles
 static adc_oneshot_unit_handle_t adc_handle = NULL;
@@ -363,10 +373,10 @@ static void report_battery_percentage(void) {
                                ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
                                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                0x0021, // BatteryPercentageRemaining
-                               &battery_pct, true);
+                               &battery_pct, false);  // Don't trigger reporting - coordinator polls
   esp_zb_lock_release();
 
-  ESP_LOGI(TAG, "Reported battery percentage: %d%%", battery_pct / 2);
+  ESP_LOGI(TAG, "Updated battery percentage: %d%% (will be polled by coordinator)", battery_pct / 2);
 }
 
 // GPIO ISR handler - just sends event to queue
@@ -574,6 +584,25 @@ static void heartbeat_timer_callback(void *arg) {
 
   // Also report battery level with each heartbeat
   report_battery_percentage();
+
+  // Battery-adapted network watchdog - check during heartbeat to avoid separate timer
+  // This aligns with deep sleep architecture (no timers run while sleeping)
+  if (network_joined) {
+    network_not_joined_count = 0;
+  } else {
+    network_not_joined_count++;
+    ESP_LOGW(TAG, "Watchdog: Not joined to network (heartbeat #%d)",
+             network_not_joined_count);
+    // Threshold: 3 failed heartbeats = 1.5 hours for battery device
+    // (vs 5 minutes for mains - more appropriate for battery conservation)
+    if (network_not_joined_count >= 3) {
+      ESP_LOGW(TAG, "Watchdog: Not joined for 3+ heartbeats (1.5+ hours) - "
+               "factory reset and reboot");
+      // Note: Factory reset + rejoin will drain battery during recovery
+      esp_zb_factory_reset();
+      esp_restart();
+    }
+  }
 }
 
 static void start_heartbeat_timer(void) {
@@ -664,18 +693,7 @@ static void gpio_event_task(void *arg) {
           }
         } else {
           // Timer IS running - this is potential noise
-          total_suppressed_changes++;
-          ESP_LOGI(TAG, "Report cooldown active - suppressing report (total: %lu)",
-                   total_suppressed_changes);
-
-          // Update the suppression counter attribute in the Zigbee stack
-          esp_zb_lock_acquire(portMAX_DELAY);
-          esp_zb_zcl_set_attribute_val(HA_ESP_VIBRATION_ENDPOINT,
-                                       ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
-                                       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                                       SUPPRESSION_COUNTER_ATTR_ID,
-                                       &total_suppressed_changes, false);
-          esp_zb_lock_release();
+          ESP_LOGI(TAG, "Report cooldown active - suppressing report");
 
           // Restart cooldown timer (reset to full duration)
           esp_timer_stop(report_cooldown_timer);
@@ -865,6 +883,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
         esp_zb_bdb_start_top_level_commissioning(
             ESP_ZB_BDB_MODE_NETWORK_STEERING);
       } else {
+        network_joined = true;
         ESP_LOGI(TAG, "Device rebooted");
 
         // Check if already enrolled and start heartbeat timer
@@ -887,7 +906,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
           esp_app_vibration_sensor_handler(vibration_detected, HA_ESP_VIBRATION_ENDPOINT);
           ESP_LOGI(TAG, "Sent initial zone status on reboot: %s", vibration_detected ? "VIBRATION" : "NO VIBRATION");
 
-          // Report battery level
+          // Update battery level (coordinator will poll for value)
           report_battery_percentage();
 
           // Start activity timer for deep sleep
@@ -903,6 +922,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
     break;
   case ESP_ZB_BDB_SIGNAL_STEERING:
     if (err_status == ESP_OK) {
+      network_joined = true;
       esp_zb_ieee_addr_t extended_pan_id;
       esp_zb_get_extended_pan_id(extended_pan_id);
       ESP_LOGI(TAG,
@@ -923,6 +943,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
           (esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
           ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
     }
+    break;
+  case ESP_ZB_ZDO_SIGNAL_LEAVE:
+    network_joined = false;
+    ESP_LOGW(TAG, "Left network - will factory reset on next watchdog check");
     break;
   default:
     ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s",
@@ -965,17 +989,6 @@ static esp_zb_cluster_list_t *custom_vibration_sensor_clusters_create(
   esp_zb_attribute_list_t *ias_zone_cluster =
       esp_zb_ias_zone_cluster_create(ias_zone_cfg);
 
-  // Add cumulative suppression counter attribute with reporting
-  ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
-      ias_zone_cluster,
-      ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
-      SUPPRESSION_COUNTER_ATTR_ID,
-      ESP_ZB_ZCL_ATTR_TYPE_U32,
-      ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-      &total_suppressed_changes));
-  ESP_LOGI(TAG, "Added suppression counter attribute (0x%04X) with reporting",
-           SUPPRESSION_COUNTER_ATTR_ID);
-
   ESP_ERROR_CHECK(esp_zb_cluster_list_add_ias_zone_cluster(
       cluster_list, ias_zone_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
@@ -990,13 +1003,31 @@ static esp_zb_cluster_list_t *custom_vibration_sensor_clusters_create(
   // Set initial battery percentage (will be updated with actual reading later)
   // Using raw attribute ID 0x0021 (BatteryPercentageRemaining)
   // Zigbee uses 0-200 scale where 200 = 100%
-  uint8_t battery_percentage = 200; // Start with 100%, will be updated on init
-  ESP_ERROR_CHECK(esp_zb_power_config_cluster_add_attr(
-      power_cluster, 0x0021,
-      &battery_percentage));
+  // NOTE: Must use static variable zb_battery_percentage, not local variable!
+  // NOTE: READ_ONLY without REPORTING - coordinator will poll (standard for battery devices)
+  ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
+      power_cluster,
+      ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+      0x0021,
+      ESP_ZB_ZCL_ATTR_TYPE_U8,
+      ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY,
+      &zb_battery_percentage));
 
   ESP_ERROR_CHECK(esp_zb_cluster_list_add_power_config_cluster(
       cluster_list, power_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+  // Add Diagnostics cluster for reset count
+  esp_zb_attribute_list_t *diagnostics_cluster =
+      esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_DIAGNOSTICS);
+  ESP_ERROR_CHECK(esp_zb_cluster_add_attr(
+      diagnostics_cluster,
+      ESP_ZB_ZCL_CLUSTER_ID_DIAGNOSTICS,
+      ESP_ZB_ZCL_ATTR_DIAGNOSTICS_NUMBER_OF_RESETS_ID,
+      ESP_ZB_ZCL_ATTR_TYPE_U16,
+      ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY,
+      &zb_reset_count));
+  ESP_ERROR_CHECK(esp_zb_cluster_list_add_diagnostics_cluster(
+      cluster_list, diagnostics_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
   // Add OTA upgrade client cluster
   esp_zb_ota_cluster_cfg_t ota_cluster_cfg = {
@@ -1085,6 +1116,10 @@ void app_main(void) {
       .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
   };
   ESP_ERROR_CHECK(nvs_flash_init());
+
+  // Increment and store reset count before Zigbee starts
+  zb_reset_count = increment_and_get_reset_count();
+
   ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
   /* Start Zigbee stack task */

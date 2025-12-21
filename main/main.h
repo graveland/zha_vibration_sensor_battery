@@ -18,7 +18,6 @@
 #define HEARTBEAT_INTERVAL_US (1800000000ULL) /* Heartbeat every 30m (microseconds) */
 #define REPORT_COOLDOWN_MS 10000 /* 10 second cooldown between reports */
 #define ACTIVITY_TIMEOUT_MS 30000 /* Stay awake 30s after last vibration */
-#define SUPPRESSION_COUNTER_ATTR_ID 0xC000 /* Cumulative suppression counter */
 
 /* Battery ADC configuration (LiFePO4 3.2V cell) */
 #define BATTERY_ADC_CHANNEL ADC_CHANNEL_4 /* GPIO5 = ADC1_CHANNEL_4 on ESP32-H2 */
