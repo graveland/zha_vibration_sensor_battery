@@ -35,7 +35,6 @@ static bool last_vibration_state = false;
 static QueueHandle_t gpio_evt_queue = NULL;
 static uint8_t ias_zone_id = 0xFF; // Will be set during enrollment
 static int64_t alarm_start_time = 0; // Track when alarm started
-static esp_timer_handle_t heartbeat_timer = NULL;
 static led_strip_handle_t led_strip = NULL;
 static esp_timer_handle_t led_flash_timer = NULL;
 static bool led_flash_active = false;
@@ -65,6 +64,11 @@ static adc_cali_handle_t adc_cali_handle = NULL;
 static const esp_partition_t *s_ota_partition = NULL;
 static esp_ota_handle_t s_ota_handle = 0;
 static bool s_tagid_received = false;
+
+// Forward declarations
+static void reset_activity_timer(void);
+static void handle_vibration_state_change(bool vibration_detected);
+static void send_heartbeat(void);
 
 static esp_err_t esp_element_ota_data(uint32_t total_size, const void *payload,
                                       uint16_t payload_size, void **outbuf,
@@ -235,17 +239,11 @@ static esp_err_t zb_ota_upgrade_query_image_resp_handler(
   }
 }
 
-// Forward declarations
-static void handle_vibration_state_change(bool vibration_detected);
-
 // Deep sleep functions
 static void enter_deep_sleep(void) {
   // Stop any running timers before sleep
   if (activity_timer) {
     esp_timer_stop(activity_timer);
-  }
-  if (heartbeat_timer) {
-    esp_timer_stop(heartbeat_timer);
   }
   if (led_flash_timer) {
     esp_timer_stop(led_flash_timer);
@@ -293,6 +291,9 @@ static esp_sleep_wakeup_cause_t check_wakeup_cause(void) {
   }
   case ESP_SLEEP_WAKEUP_TIMER:
     ESP_LOGI(TAG, "Woke up from timer (heartbeat)");
+    // Send heartbeat when waking from timer, then device will go back to sleep
+    // after activity timeout if no vibration detected
+    send_heartbeat();
     break;
   default:
     ESP_LOGI(TAG, "Cold boot or reset (cause=%d)", cause);
@@ -601,7 +602,7 @@ static bool read_vibration_state(void) {
   return (level == 1);
 }
 
-static void heartbeat_timer_callback(void *arg) {
+static void send_heartbeat(void) {
   // Send periodic heartbeat to coordinator
   bool current_state = read_vibration_state();
 
@@ -633,18 +634,6 @@ static void heartbeat_timer_callback(void *arg) {
       esp_restart();
     }
   }
-}
-
-static void start_heartbeat_timer(void) {
-  const esp_timer_create_args_t heartbeat_timer_args = {
-      .callback = &heartbeat_timer_callback,
-      .name = "heartbeat_timer"
-  };
-
-  ESP_ERROR_CHECK(esp_timer_create(&heartbeat_timer_args, &heartbeat_timer));
-  ESP_ERROR_CHECK(esp_timer_start_periodic(heartbeat_timer, HEARTBEAT_INTERVAL_US));
-  ESP_LOGI(TAG, "Heartbeat timer started (interval: %llu minutes)",
-           HEARTBEAT_INTERVAL_US / 60000000ULL);
 }
 
 static void handle_vibration_state_change(bool vibration_detected) {
@@ -870,12 +859,8 @@ static esp_err_t zb_ias_zone_cluster_attr_handler(
       // Report initial battery level
       report_battery_percentage();
 
-      // Start heartbeat timer now that we're enrolled
-      if (heartbeat_timer == NULL) {
-        start_heartbeat_timer();
-      }
-
-      // Start activity timer for deep sleep
+      // Start activity timer for deep sleep - device will sleep after 30s of inactivity
+      // and wake every 30 minutes to send heartbeat via RTC timer
       reset_activity_timer();
     }
   }
@@ -970,11 +955,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
           ias_zone_id = *(uint8_t *)zone_id_attr->data_p;
           ESP_LOGI(TAG, "Already enrolled with IAS Zone ID: %d", ias_zone_id);
 
-          // Start heartbeat timer since we're already enrolled
-          if (heartbeat_timer == NULL) {
-            start_heartbeat_timer();
-          }
-
           // Send current status
           vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for network to be fully ready
           bool vibration_detected = read_vibration_state();
@@ -984,7 +964,8 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
           // Update battery level (coordinator will poll for value)
           report_battery_percentage();
 
-          // Start activity timer for deep sleep
+          // Start activity timer for deep sleep - device will sleep after 30s of inactivity
+          // and wake every 30 minutes to send heartbeat via RTC timer
           reset_activity_timer();
         }
         esp_zb_lock_release();
