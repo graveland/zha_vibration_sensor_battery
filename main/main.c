@@ -254,9 +254,10 @@ static void enter_deep_sleep(void) {
     led_strip_clear(led_strip);
   }
 
-  // Configure GPIO 14 as wakeup source using ext1 (ESP32-H2/C6 only have ext1)
-  // Wake on HIGH level (vibration detected)
-  esp_sleep_enable_ext1_wakeup(1ULL << VIBRATION_GPIO, ESP_EXT1_WAKEUP_ANY_HIGH);
+  // Configure GPIO 14 and GPIO 9 as wakeup sources using ext1 (ESP32-H2/C6 only have ext1)
+  // Wake on HIGH level (vibration detected or boot button pressed)
+  esp_sleep_enable_ext1_wakeup((1ULL << VIBRATION_GPIO) | (1ULL << BOOT_BUTTON_GPIO),
+                               ESP_EXT1_WAKEUP_ANY_HIGH);
 
   // Configure timer for 30-minute heartbeat
   esp_sleep_enable_timer_wakeup(HEARTBEAT_INTERVAL_US);
@@ -273,9 +274,18 @@ static void enter_deep_sleep(void) {
 static esp_sleep_wakeup_cause_t check_wakeup_cause(void) {
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   switch (cause) {
-  case ESP_SLEEP_WAKEUP_EXT1:
-    ESP_LOGI(TAG, "Woke up from GPIO (vibration detected)");
+  case ESP_SLEEP_WAKEUP_EXT1: {
+    // Check which GPIO caused the wakeup
+    uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
+    if (wakeup_pin_mask & (1ULL << BOOT_BUTTON_GPIO)) {
+      ESP_LOGI(TAG, "Woke up from boot button press");
+    } else if (wakeup_pin_mask & (1ULL << VIBRATION_GPIO)) {
+      ESP_LOGI(TAG, "Woke up from vibration sensor");
+    } else {
+      ESP_LOGI(TAG, "Woke up from GPIO (unknown pin mask: 0x%llx)", wakeup_pin_mask);
+    }
     break;
+  }
   case ESP_SLEEP_WAKEUP_TIMER:
     ESP_LOGI(TAG, "Woke up from timer (heartbeat)");
     break;
@@ -498,7 +508,7 @@ static void init_vibration_gpio(void) {
   // Create queue for GPIO events
   gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
 
-  // Configure GPIO
+  // Configure vibration sensor GPIO
   gpio_config_t io_conf = {
       .pin_bit_mask = (1ULL << VIBRATION_GPIO),
       .mode = GPIO_MODE_INPUT,
@@ -508,20 +518,35 @@ static void init_vibration_gpio(void) {
   };
   ESP_ERROR_CHECK(gpio_config(&io_conf));
 
+  // Configure boot button GPIO (pull-down, wake on HIGH when pressed)
+  gpio_config_t boot_btn_conf = {
+      .pin_bit_mask = (1ULL << BOOT_BUTTON_GPIO),
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_ENABLE,  // Pull down so button press = HIGH
+      .intr_type = GPIO_INTR_POSEDGE,  // Trigger on rising edge (button press)
+  };
+  ESP_ERROR_CHECK(gpio_config(&boot_btn_conf));
+
   // Install GPIO ISR service (may already be installed)
   esp_err_t err = gpio_install_isr_service(0);
   if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
     ESP_LOGE(TAG, "Failed to install GPIO ISR service: %s", esp_err_to_name(err));
   }
 
-  // Attach interrupt handler
+  // Attach interrupt handlers
   ESP_ERROR_CHECK(gpio_isr_handler_add(VIBRATION_GPIO, gpio_isr_handler,
                                        (void *)VIBRATION_GPIO));
+  ESP_ERROR_CHECK(gpio_isr_handler_add(BOOT_BUTTON_GPIO, gpio_isr_handler,
+                                       (void *)BOOT_BUTTON_GPIO));
 
-  // Read and log initial GPIO state
+  // Read and log initial GPIO states
   int level = gpio_get_level(VIBRATION_GPIO);
   ESP_LOGI(TAG, "Vibration sensor GPIO %d initialized with interrupts, current level: %d",
            VIBRATION_GPIO, level);
+  level = gpio_get_level(BOOT_BUTTON_GPIO);
+  ESP_LOGI(TAG, "Boot button GPIO %d initialized with interrupts, current level: %d",
+           BOOT_BUTTON_GPIO, level);
 }
 
 void report_ias_zone_status(uint8_t ep, uint16_t zone_status, uint8_t zone_id) {
@@ -665,6 +690,51 @@ static void gpio_event_task(void *arg) {
   while (1) {
     if (xQueueReceive(gpio_evt_queue, &gpio_num, portMAX_DELAY)) {
       ESP_LOGI(TAG, "GPIO interrupt received on pin %lu", gpio_num);
+
+      // Handle boot button press separately
+      if (gpio_num == BOOT_BUTTON_GPIO) {
+        ESP_LOGI(TAG, "Boot button pressed - checking for long press...");
+
+        // Wait for long press duration while checking button state
+        int check_count = 0;
+        const int check_interval_ms = 100;
+        const int total_checks = BOOT_BUTTON_LONG_PRESS_MS / check_interval_ms;
+
+        for (check_count = 0; check_count < total_checks; check_count++) {
+          vTaskDelay(pdMS_TO_TICKS(check_interval_ms));
+          if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+            // Button released
+            ESP_LOGI(TAG, "Boot button released after %d ms - ignoring",
+                     check_count * check_interval_ms);
+            break;
+          }
+        }
+
+        // Check if button was held for full duration
+        if (check_count >= total_checks && gpio_get_level(BOOT_BUTTON_GPIO) == 1) {
+          ESP_LOGW(TAG, "Boot button held for %d ms - triggering factory reset!",
+                   BOOT_BUTTON_LONG_PRESS_MS);
+
+          // Flash LED to indicate factory reset
+          if (led_strip) {
+            for (int i = 0; i < 5; i++) {
+              led_strip_set_pixel(led_strip, 0, 255, 0, 0);  // Red
+              led_strip_refresh(led_strip);
+              vTaskDelay(pdMS_TO_TICKS(100));
+              led_strip_clear(led_strip);
+              vTaskDelay(pdMS_TO_TICKS(100));
+            }
+          }
+
+          esp_zb_factory_reset();
+          vTaskDelay(pdMS_TO_TICKS(100));  // Give time for reset to complete
+          esp_restart();
+        }
+
+        continue;  // Skip vibration handling for boot button
+      }
+
+      // Handle vibration sensor events
       TickType_t current_time = xTaskGetTickCount();
 
       // Debounce: ignore interrupts within DEBOUNCE_TIME_MS

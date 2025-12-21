@@ -15,9 +15,11 @@
 #define VIBRATION_GPIO 14 /* GPIO pin for vibration sensor (SW-420) */
 #define RGB_LED_GPIO 8 /* GPIO pin for RGB LED */
 #define STATUS_LED_GPIO 13 /* GPIO pin for board status LED (disabled) */
+#define BOOT_BUTTON_GPIO 9 /* GPIO pin for boot button (factory reset) */
 #define HEARTBEAT_INTERVAL_US (1800000000ULL) /* Heartbeat every 30m (microseconds) */
 #define REPORT_COOLDOWN_MS 10000 /* 10 second cooldown between reports */
 #define ACTIVITY_TIMEOUT_MS 30000 /* Stay awake 30s after last vibration */
+#define BOOT_BUTTON_LONG_PRESS_MS 5000 /* 5 second hold for factory reset */
 
 /* Battery ADC configuration (LiFePO4 3.2V cell) */
 #define BATTERY_ADC_CHANNEL ADC_CHANNEL_4 /* GPIO5 = ADC1_CHANNEL_4 on ESP32-H2 */

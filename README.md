@@ -19,6 +19,7 @@ The SW-420 module has an onboard comparator circuit and outputs HIGH when vibrat
 | GPIO | Function | Notes |
 |------|----------|-------|
 | 14 | Vibration sensor input | HIGH=vibration, LOW=normal |
+| 9 | Boot button | Long press (5s) for factory reset, wakes from sleep |
 | 5 | Battery ADC input | Via 100k/100k voltage divider |
 | 8 | RGB LED (WS2812) | Status indication |
 | 13 | Status LED | Disabled to save power |
@@ -39,7 +40,8 @@ LiFePO4 voltage range: 2.8V (empty) to 3.6V (full)
 ## Features
 
 - **End Device**: Battery-powered sleepy device (not a router)
-- **Deep Sleep**: Wakes on vibration or 30-minute timer
+- **Deep Sleep**: Wakes on vibration, boot button press, or 30-minute timer
+- **Factory Reset**: Press and hold boot button for 5 seconds (LED flashes red)
 - **Battery Reporting**: Reports battery percentage to coordinator
 - **IAS Zone Device**: Reports as vibration sensor (zone type 0x0028)
 - **Interrupt-Driven**: GPIO wakeup with 50ms debouncing
@@ -53,9 +55,10 @@ The device operates in a sleep cycle:
 
 1. **Deep Sleep** - ~10µA current draw
 2. **Wake on vibration** - GPIO interrupt triggers wakeup
-3. **Wake on timer** - 30-minute heartbeat with battery report
-4. **Active period** - Stays awake 30s after last vibration
-5. **Return to sleep** - After activity timeout expires
+3. **Wake on boot button** - Press button to wake and optionally factory reset
+4. **Wake on timer** - 30-minute heartbeat with battery report
+5. **Active period** - Stays awake 30s after last vibration
+6. **Return to sleep** - After activity timeout expires
 
 ## OTA Update Process
 
