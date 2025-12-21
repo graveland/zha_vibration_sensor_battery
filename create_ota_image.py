@@ -20,7 +20,7 @@ except ImportError:
 # From main.h
 MANUFACTURER_CODE = 0x1234
 IMAGE_TYPE = 0x567c
-DEFAULT_FILE_VERSION = 0x00000001
+DEFAULT_FILE_VERSION = 0x00000003
 
 def create_zigbee_ota_file(input_bin, output_ota, file_version=DEFAULT_FILE_VERSION):
     """Create a Zigbee OTA file from ESP32 binary using zigpy."""
@@ -51,7 +51,7 @@ def create_zigbee_ota_file(input_bin, output_ota, file_version=DEFAULT_FILE_VERS
         image_type=IMAGE_TYPE,
         file_version=file_version,
         stack_version=2,  # Zigbee PRO
-        header_string="ESP32-H2 Water Leak Sensor",
+        header_string="ESP32-H2 Vibration Sensor (battery)",
         image_size=0,  # Will be calculated
     )
 
