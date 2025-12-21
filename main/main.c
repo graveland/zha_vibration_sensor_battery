@@ -120,6 +120,7 @@ zb_ota_upgrade_status_handler(esp_zb_zcl_ota_upgrade_value_message_t message) {
     switch (message.upgrade_status) {
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START:
       ESP_LOGI(TAG, "-- OTA upgrade start");
+      reset_activity_timer(); // Keep device awake during OTA
 
       // Clean up any previous incomplete OTA session
       if (s_ota_handle != 0) {
@@ -148,6 +149,7 @@ zb_ota_upgrade_status_handler(esp_zb_zcl_ota_upgrade_value_message_t message) {
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE:
       total_size = message.ota_header.image_size;
       offset += message.payload_size;
+      reset_activity_timer(); // Keep device awake during OTA
       ESP_LOGI(TAG, "-- OTA Client receives data: progress [%ld/%ld]", offset,
                total_size);
       if (message.payload_size && message.payload) {
@@ -171,9 +173,11 @@ zb_ota_upgrade_status_handler(esp_zb_zcl_ota_upgrade_value_message_t message) {
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY:
       ESP_LOGI(TAG, "-- OTA upgrade apply");
+      reset_activity_timer(); // Keep device awake during OTA
       break;
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_CHECK:
+      reset_activity_timer(); // Keep device awake during OTA
       ret = offset == total_size ? ESP_OK : ESP_FAIL;
       offset = 0;
       total_size = 0;
@@ -183,6 +187,7 @@ zb_ota_upgrade_status_handler(esp_zb_zcl_ota_upgrade_value_message_t message) {
 
     case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH:
       ESP_LOGI(TAG, "-- OTA Finish");
+      reset_activity_timer(); // Keep device awake during OTA finalization
       ESP_LOGI(TAG,
                "-- OTA Information: version: 0x%lx, manufacturer code: 0x%x, "
                "image type: 0x%x, total size: %ld bytes, cost time: %lld ms",
